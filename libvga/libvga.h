@@ -11,38 +11,68 @@
  * %LICENSE%
  */
 
-#ifndef _VGA_H_
-#define _VGA_H_
+#ifndef _LIBVGA_H_
+#define _LIBVGA_H_
 
 
-#define VGA_MEMSZ  0x10000
-#define VGA_CMAPSZ 768
-#define VGA_FONTSZ VGA_MEMSZ
-#define VGA_TEXTSZ (VGA_MEMSZ >> 1)
+/* VGA common defines */
+#define VGA_MEMSZ  0x10000          /* VGA memory size */
+#define VGA_CMAPSZ 768              /* VGA color map size */
+#define VGA_TEXTSZ (VGA_MEMSZ >> 1) /* VGA text size */
+#define VGA_FONTSZ VGA_MEMSZ        /* VGA font size */
+
+
+/* VGA mode flags */
+enum {
+	VGA_HSYNCP    = (1 << 0),       /* HSync polarity */
+	VGA_VSYNCP    = (1 << 1),       /* VSync polarity */
+	VGA_CLKDIV    = (1 << 2),       /* Half the clock */
+	VGA_DBLSCAN   = (1 << 3),       /* Double scan */
+	VGA_INTERLACE = (1 << 4)        /* Interlace mode */
+};
 
 
 typedef struct {
-	unsigned char misc;     /* Miscellaneous register */
-	unsigned char crtc[25]; /* CRT controller registers */
-	unsigned char seq[5];   /* Sequencer registers */
-	unsigned char gfx[9];   /* Graphics controller registers */
-	unsigned char attr[21]; /* Attribute controller registers */
-	unsigned char *cmap;    /* Color map */
-	unsigned char *font1;   /* Plane 2 font */
-	unsigned char *font2;   /* Plane 3 font */
-	unsigned char *text;    /* Plane 0 and 1 text */
+	unsigned int clk;               /* Pixel clock frequency (kHz) */
+	/* Horizontal timings */
+	unsigned int hres;              /* Horizontal resolution */
+	unsigned int hsyncs;            /* Horizontal sync start */
+	unsigned int hsynce;            /* Horizontal sync end */
+	unsigned int htotal;            /* Horizontal total pixels */
+	unsigned int hskew;             /* Horizontal skew */
+	/* Vertical timings */
+	unsigned int vres;              /* Vertical resolution */
+	unsigned int vsyncs;            /* Vertical sync start */
+	unsigned int vsynce;            /* Vertical sync end */
+	unsigned int vtotal;            /* Vertical total lines */
+	unsigned int vscan;             /* Vertical scan multiplier */
+	/* Mode configuration */
+	unsigned char flags;            /* Mode flags */
+} vga_mode_t;
+
+
+typedef struct {
+	unsigned char misc;             /* Miscellaneous register */
+	unsigned char crtc[25];         /* CRT controller registers */
+	unsigned char seq[5];           /* Sequencer registers */
+	unsigned char gfx[9];           /* Graphics controller registers */
+	unsigned char attr[21];         /* Attribute controller registers */
+	unsigned char *cmap;            /* Color map */
+	unsigned char *text;            /* Plane 0 and 1 text */
+	unsigned char *font1;           /* Plane 2 font */
+	unsigned char *font2;           /* Plane 3 font */
 } vga_state_t;
 
 
 typedef struct {
-	void *misc;             /* Miscellaneous register base */
-	void *crtc;             /* CRT controller registers base */
-	void *seq;              /* Sequencer registers base */
-	void *gfx;              /* Graphics controller registers base */
-	void *attr;             /* Attribute controller registers base */
-	void *dac;              /* Digital to Analog Converter registers base */
-	void *mem;              /* Mapped VGA memory base address */
-	unsigned int memsz;     /* Mapped VGA memory size */
+	void *misc;                     /* Miscellaneous registers base address */
+	void *crtc;                     /* CRT controller registers base address */
+	void *seq;                      /* Sequencer registers base address */
+	void *gfx;                      /* Graphics controller registers base address */
+	void *attr;                     /* Attribute controller registers base address */
+	void *dac;                      /* Digital to Analog Converter registers base address */
+	void *mem;                      /* Mapped VGA memory base address */
+	unsigned int memsz;             /* Mapped VGA memory size */
 } vga_t;
 
 
@@ -152,7 +182,7 @@ extern void vga_unblank(vga_t *vga);
 extern void vga_savemode(vga_t *vga, vga_state_t *state);
 
 
-/* Restore VGA mode */
+/* Restores VGA mode */
 extern void vga_restoremode(vga_t *vga, vga_state_t *state);
 
 
@@ -178,6 +208,10 @@ extern void vga_save(vga_t *vga, vga_state_t *state);
 
 /* Restores VGA settings */
 extern void vga_restore(vga_t *vga, vga_state_t *state);
+
+
+/* Initializes VGA state for given mode */
+extern void vga_mode(unsigned char clkidx, vga_mode_t *mode, vga_state_t *state);
 
 
 #endif

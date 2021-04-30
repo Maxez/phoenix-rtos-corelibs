@@ -20,7 +20,7 @@ endif
 $(PREFIX_A)libvga.a: $(addprefix $(PREFIX_O)libvga/, $(OBJS))
 	$(ARCH)
 
-$(PREFIX_H)libvga.h: libvga/vga.h
+$(PREFIX_H)libvga.h: libvga/libvga.h
 	$(HEADER)
 
 all: $(PREFIX_A)libvga.a $(PREFIX_H)libvga.h

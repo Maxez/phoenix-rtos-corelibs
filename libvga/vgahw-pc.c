@@ -17,7 +17,7 @@
 #include <sys/io.h>
 #include <sys/mman.h>
 
-#include "vga.h"
+#include "libvga.h"
 
 
 unsigned char vga_status(vga_t *vga)
@@ -140,7 +140,7 @@ int vga_init(vga_t *vga)
 
 	/* Map VGA memory (64KB) */
 	vga->memsz = (VGA_MEMSZ + _PAGE_SIZE - 1) & ~(_PAGE_SIZE - 1);
-	if ((vga->mem = mmap(NULL, vga->memsz, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_UNCACHED | MAP_DEVICE, OID_PHYSMEM, 0xa0000)) == MAP_FAILED)
+	if ((vga->mem = mmap(NULL, vga->memsz, PROT_READ | PROT_WRITE, MAP_DEVICE | MAP_SHARED | MAP_UNCACHED | MAP_ANONYMOUS, OID_PHYSMEM, 0xa0000)) == MAP_FAILED)
 		return -ENOMEM;
 
 	return EOK;

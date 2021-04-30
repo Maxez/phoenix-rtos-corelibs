@@ -1,7 +1,7 @@
 /*
  * Phoenix-RTOS
  *
- * Graph library
+ * Graphics library
  *
  * Copyright 2009, 2021 Phoenix Systems
  * Copyright 2002-2007 IMMOS
@@ -18,7 +18,7 @@
 
 #include <sys/threads.h>
 
-#include "graph.h"
+#include "libgraph.h"
 #include "soft.h"
 
 
@@ -95,10 +95,10 @@ typedef struct {
 } __attribute__((packed)) graph_task_t;
 
 
-#ifdef GRAPH_CT69000
-extern int ct69000_open(graph_t *);
-extern void ct69000_done(void);
-extern int ct69000_init(void);
+#ifdef GRAPH_CIRRUS
+extern int cirrus_open(graph_t *);
+extern void cirrus_done(void);
+extern int cirrus_init(void);
 #endif
 
 
@@ -116,10 +116,10 @@ extern int geode_init(void);
 #endif
 
 
-#ifdef GRAPH_CIRRUS
-extern int cirrus_open(graph_t *);
-extern void cirrus_done(void);
-extern int cirrus_init(void);
+#ifdef GRAPH_CT69000
+extern int ct69000_open(graph_t *);
+extern void ct69000_done(void);
+extern int ct69000_init(void);
 #endif
 
 
@@ -525,8 +525,8 @@ int graph_open(graph_t *graph, unsigned int mem, unsigned int adapter)
 
 	/* Initialize graphics adapter context */
 	do {
-#ifdef GRAPH_CT69000
-		if ((adapter & GRAPH_CT69000) && ((err = ct69000_open(graph)) != -ENODEV))
+#ifdef GRAPH_CIRRUS
+		if ((adapter & GRAPH_CIRRUS) && ((err = cirrus_open(graph)) != -ENODEV))
 			break;
 #endif
 
@@ -540,8 +540,8 @@ int graph_open(graph_t *graph, unsigned int mem, unsigned int adapter)
 			break;
 #endif
 
-#ifdef GRAPH_CIRRUS
-		if ((adapter & GRAPH_CIRRUS) && ((err = cirrus_open(graph)) != -ENODEV))
+#ifdef GRAPH_CT69000
+		if ((adapter & GRAPH_CT69000) && ((err = ct69000_open(graph)) != -ENODEV))
 			break;
 #endif
 
@@ -568,8 +568,8 @@ int graph_open(graph_t *graph, unsigned int mem, unsigned int adapter)
 
 void graph_done(void)
 {
-#ifdef GRAPH_CT69000
-	ct69000_done();
+#ifdef GRAPH_CIRRUS
+	cirrus_done();
 #endif
 
 #ifdef GRAPH_SAVAGE4
@@ -580,8 +580,8 @@ void graph_done(void)
 	geode_done();
 #endif
 
-#ifdef GRAPH_CIRRUS
-	cirrus_done();
+#ifdef GRAPH_CT69000
+	ct69000_done();
 #endif
 
 #ifdef GRAPH_VIRTIOGPU
@@ -598,8 +598,8 @@ int graph_init(void)
 {
 	int err;
 
-#ifdef GRAPH_CT69000
-	if ((err = ct69000_init()) < 0)
+#ifdef GRAPH_CIRRUS
+	if ((err = cirrus_init()) < 0)
 		return err;
 #endif
 
@@ -613,8 +613,8 @@ int graph_init(void)
 		return err;
 #endif
 
-#ifdef GRAPH_CIRRUS
-	if ((err = cirrus_init()) < 0)
+#ifdef GRAPH_CT69000
+	if ((err = ct69000_init()) < 0)
 		return err;
 #endif
 

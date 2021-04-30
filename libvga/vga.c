@@ -1,7 +1,7 @@
 /*
  * Phoenix-RTOS
  *
- * VGA library internal interface based on XFree86 implementation
+ * VGA library interface based on XFree86 implementation
  *
  * Copyright 2021 Phoenix Systems
  * Author: Lukasz Kosinski
@@ -60,7 +60,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "vga.h"
+#include <sys/minmax.h>
+
+#include "libvga.h"
 
 
 void vga_lock(vga_t *vga)
@@ -95,20 +97,20 @@ void vga_munlock(vga_t *vga)
 
 void vga_blank(vga_t *vga)
 {
-	unsigned char seq01 = vga_readseq(vga, 0x01);
+	unsigned char sr01 = vga_readseq(vga, 0x01);
 
 	vga_writeseq(vga, 0x00, 0x01);
-	vga_writeseq(vga, 0x01, seq01 | 0x20);
+	vga_writeseq(vga, 0x01, sr01 | 0x20);
 	vga_writeseq(vga, 0x00, 0x03);
 }
 
 
 void vga_unblank(vga_t *vga)
 {
-	unsigned char seq01 = vga_readseq(vga, 0x01);
+	unsigned char sr01 = vga_readseq(vga, 0x01);
 
 	vga_writeseq(vga, 0x00, 0x01);
-	vga_writeseq(vga, 0x01, seq01 & ~0x20);
+	vga_writeseq(vga, 0x01, sr01 & ~0x20);
 	vga_writeseq(vga, 0x00, 0x03);
 }
 
@@ -208,7 +210,7 @@ void vga_restorecmap(vga_t *vga, vga_state_t *state)
 /* Copies VGA fonts and text */
 static void vga_copytext(vga_t *vga, vga_state_t *state, unsigned char dir)
 {
-	unsigned char misc, gr01, gr03, gr04, gr05, gr06, gr08, seq02, seq04;
+	unsigned char misc, gr01, gr03, gr04, gr05, gr06, gr08, sr02, sr04;
 
 	/* Save registers */
 	misc = vga_readmisc(vga);
@@ -218,8 +220,8 @@ static void vga_copytext(vga_t *vga, vga_state_t *state, unsigned char dir)
 	gr05 = vga_readgfx(vga, 0x05);
 	gr06 = vga_readgfx(vga, 0x06);
 	gr08 = vga_readgfx(vga, 0x08);
-	seq02 = vga_readseq(vga, 0x02);
-	seq04 = vga_readseq(vga, 0x04);
+	sr02 = vga_readseq(vga, 0x02);
+	sr04 = vga_readseq(vga, 0x04);
 
 	/* Force into color mode */
 	vga_writemisc(vga, misc | 0x01);
@@ -271,8 +273,8 @@ static void vga_copytext(vga_t *vga, vga_state_t *state, unsigned char dir)
 	}
 
 	/* Restore registers */
-	vga_writeseq(vga, 0x04, seq04);
-	vga_writeseq(vga, 0x02, seq02);
+	vga_writeseq(vga, 0x04, sr04);
+	vga_writeseq(vga, 0x02, sr02);
 	vga_writegfx(vga, 0x08, gr08);
 	vga_writegfx(vga, 0x06, gr06);
 	vga_writegfx(vga, 0x05, gr05);
@@ -315,4 +317,147 @@ void vga_restore(vga_t *vga, vga_state_t *state)
 	vga_restoremode(vga, state);
 	vga_restorecmap(vga, state);
 	vga_restoretext(vga, state);
+}
+
+
+void vga_mode(unsigned char clkidx, vga_mode_t *mode, vga_state_t *state)
+{
+	unsigned int i, hblanks, hblanke, vres, vsyncs, vsynce, vtotal, vblanks, vblanke;
+
+	/* Miscellaneous register */
+	state->misc = 0x23 | ((clkidx & 0x03) << 2);
+	if (!(mode->flags & VGA_HSYNCP))
+		state->misc |= 0x40;
+	if (!(mode->flags & VGA_VSYNCP))
+		state->misc |= 0x80;
+
+	/* Sequencer registers */
+	state->seq[0] = 0x00;
+	state->seq[1] = (mode->flags & VGA_CLKDIV) ? 0x09 : 0x01;
+	state->seq[2] = 0x0f;
+	state->seq[3] = 0x00;
+	state->seq[4] = 0x0e;
+
+	/* CRT controller registers */
+	vres = mode->vres;
+	vsyncs = mode->vsyncs;
+	vsynce = mode->vsynce;
+	vtotal = mode->vtotal;
+
+	if (mode->flags & VGA_DBLSCAN) {
+		vres <<= 1;
+		vsyncs <<= 1;
+		vsynce <<= 1;
+		vtotal <<= 1;
+	}
+
+	if (mode->flags & VGA_INTERLACE) {
+		vres >>= 1;
+		vsyncs >>= 1;
+		vsynce >>= 1;
+		vtotal >>= 1;
+	}
+
+	if (mode->vscan > 1) {
+		vres *= mode->vscan;
+		vsyncs *= mode->vscan;
+		vsynce *= mode->vscan;
+		vtotal *= mode->vscan;
+	}
+
+	hblanks = min(mode->hsyncs, mode->hres);
+	hblanke = max(mode->hsynce, mode->htotal);
+	if (hblanks + 0x1f8 < hblanke)
+		hblanks = hblanke - 0x1f8;
+
+	vblanks = min(vsyncs, vres);
+	vblanke = max(vsynce, vtotal);
+	if (vblanks + 0x7f < vblanke)
+		vblanks = vblanke - 0x7f;
+
+	state->crtc[0] = (mode->htotal >> 3) - 5;
+	state->crtc[1] = (mode->hres >> 3) - 1;
+	state->crtc[2] = (hblanks >> 3) - 1;
+	state->crtc[3] = (((hblanke >> 3) - 1) & 0x1f) | 0x80;
+	if ((i = ((mode->hskew << 2) + 0x10) & ~0x1f) < 0x80)
+		state->crtc[3] |= i;
+	state->crtc[4] = (mode->hsyncs >> 3) - 1;
+	state->crtc[5] = ((((hblanke >> 3) - 1) & 0x20) << 2) | (((mode->hsynce >> 3) - 1) & 0x1f);
+	state->crtc[6] = (vtotal - 2) & 0xff;
+	state->crtc[7] = (((vtotal - 2) & 0x100) >> 8) | (((vres - 1) & 0x100) >> 7) | (((vsyncs - 1) & 0x100) >> 6) | (((vblanks - 1) & 0x100) >> 5);
+	state->crtc[7] |= (((vtotal - 2) & 0x200) >> 4) | (((vres - 1) & 0x200) >> 3) | (((vsyncs - 1) & 0x200) >> 2) | 0x10;
+	state->crtc[8] = 0x00;
+	state->crtc[9] = (((vblanks - 1) & 0x200) >> 4) | 0x40;
+	if (mode->flags & VGA_DBLSCAN)
+		state->crtc[9] |= 0x80;
+	if (mode->vscan >= 32)
+		state->crtc[9] |= 0x1f;
+	else if (mode->vscan > 1)
+		state->crtc[9] |= mode->vscan - 1;
+	state->crtc[10] = 0x00;
+	state->crtc[11] = 0x00;
+	state->crtc[12] = 0x00;
+	state->crtc[13] = 0x00;
+	state->crtc[14] = 0x00;
+	state->crtc[15] = 0x00;
+	state->crtc[16] = (vsyncs - 1) & 0xff;
+	state->crtc[17] = ((vsynce - 1) & 0x0f) | 0x20;
+	state->crtc[18] = (vres - 1) & 0xff;
+	state->crtc[19] = ((mode->hres + 0x0f) & ~0x0f) >> 3;
+	state->crtc[20] = 0x00;
+	state->crtc[21] = (vblanks - 1) & 0xff;
+	state->crtc[22] = (vblanke - 1) & 0xff;
+	state->crtc[23] = 0xc3;
+	state->crtc[24] = 0xff;
+
+	/* Fix horizontal KGA blanking */
+	if (hblanke >> 3 == mode->htotal >> 3) {
+		i = (state->crtc[3] & 0x1f) | ((state->crtc[5] & 0x80) >> 2);
+		if ((i-- > (((hblanks >> 3) - 1) & 0x3f)) && (hblanke == mode->htotal))
+			i = 0;
+		state->crtc[3] = (state->crtc[3] & ~0x1f) | (i & 0x1f);
+		state->crtc[5] = (state->crtc[5] & ~0x80) | ((i << 2) & 0x80);
+	}
+
+	/* Fix vertical KGA blanking */
+	if (vblanke == mode->vtotal) {
+		i = state->crtc[22];
+		if (!(state->crtc[9] & 0x9f) && (i > state->crtc[21]) && ((i-- & 0x7f) > (state->crtc[21] & 0x7f)))
+			i = 0;
+		state->crtc[22] = i & 0xff;
+	}
+
+	/* Graphics controller registers */
+	state->gfx[0] = 0x00;
+	state->gfx[1] = 0x00;
+	state->gfx[2] = 0x00;
+	state->gfx[3] = 0x00;
+	state->gfx[4] = 0x00;
+	state->gfx[5] = 0x40;
+	state->gfx[6] = 0x05;
+	state->gfx[7] = 0x0f;
+	state->gfx[8] = 0xff;
+
+	/* Attributes controller registers */
+	state->attr[0] = 0x00;
+	state->attr[1] = 0x01;
+	state->attr[2] = 0x02;
+	state->attr[3] = 0x03;
+	state->attr[4] = 0x04;
+	state->attr[5] = 0x05;
+	state->attr[6] = 0x06;
+	state->attr[7] = 0x07;
+	state->attr[8] = 0x08;
+	state->attr[9] = 0x09;
+	state->attr[10] = 0x0a;
+	state->attr[11] = 0x0b;
+	state->attr[12] = 0x0c;
+	state->attr[13] = 0x0d;
+	state->attr[14] = 0x0e;
+	state->attr[15] = 0x0f;
+	state->attr[16] = 0x41;
+	state->attr[17] = 0xff;
+	state->attr[18] = 0x0f;
+	state->attr[19] = 0x00;
+	state->attr[20] = 0x00;
 }

@@ -62,47 +62,28 @@
 #include <string.h>
 #include <unistd.h>
 
-#include <sys/minmax.h>
-
 #include <libvga.h>
 
-#include "graph.h"
+#include "libgraph.h"
 
 
-/* Graphics mode flags */
-enum {
-	HSYNCP    = (1 << 0),            /* HSYNC polarity */
-	VSYNCP    = (1 << 1),            /* VSYNC polarity */
-	DBLSCAN   = (1 << 2),            /* Double scan */
-	CLKDIV    = (1 << 3),            /* Half the clock */
-	INTERLACE = (1 << 4)             /* Interlace mode */
-};
+/* Default graphics mode index */
+#define DEFMODE 5                    /* 320x200x8 @ 70Hz */
 
 
 typedef struct {
 	graph_mode_t mode;               /* Graphics mode */
-	unsigned int depth;              /* Color depth */
+	unsigned char depth;             /* Color depth */
 	union {
 		/* Power management mode */
 		struct {
-			unsigned char seq01;     /* Power management configuration */
-			unsigned char crtc17;    /* Power management configuration */
+			unsigned char sr01;      /* DPMS sr01 register configuration */
+			unsigned char cr17;      /* DPMS gr0e register configuration */
 		} pwm;
 		/* Graphics mode */
 		struct {
 			graph_freq_t freq;       /* Screen refresh rate */
-			unsigned int clock;      /* Pixel clock frequency */
-			unsigned int hres;       /* Horizontal resolution */
-			unsigned int hsyncs;     /* Horizontal sync start */
-			unsigned int hsynce;     /* Horizontal sync end */
-			unsigned int htotal;     /* Horizontal total pixels */
-			unsigned int hskew;      /* Horizontal skew */
-			unsigned int vres;       /* Vertical resolution */
-			unsigned int vsyncs;     /* Vertical sync start */
-			unsigned int vsynce;     /* Vertical sync end */
-			unsigned int vtotal;     /* Vertical total lines */
-			unsigned int vscan;      /* Vertical scan multiplier */
-			unsigned int flags;      /* Mode flags */
+			vga_mode_t cfg;          /* Mode configuration */
 		} gfx;
 	};
 } vgadev_mode_t;
@@ -110,22 +91,25 @@ typedef struct {
 
 typedef struct {
 	vga_t vga;                       /* VGA data */
-	vga_state_t state;               /* Saved state */
+	vga_state_t state;               /* Saved video state */
 	unsigned char cmap[VGA_CMAPSZ];  /* Saved color map */
+	unsigned char text[VGA_TEXTSZ];  /* Saved text */
 	unsigned char font1[VGA_FONTSZ]; /* Saved font1 */
 	unsigned char font2[VGA_FONTSZ]; /* Saved font2 */
-	unsigned char text[VGA_TEXTSZ];  /* Saved text */
 } vgadev_t;
 
 
+/* Graphics modes table */
 static const vgadev_mode_t modes[] = {
 	/* Control modes */
-	{ GRAPH_ON,        0, .pwm = { 0x00, 0x80 } },
-	{ GRAPH_OFF,       0, .pwm = { 0x20, 0x00 } },
-	/* 1-byte color */
-	{ GRAPH_320x200x8, 1, .gfx = { GRAPH_60Hz, 25176, 320, 336, 384, 400, 0, 200, 206, 207, 224, 2, VSYNCP | CLKDIV } },
+	{ GRAPH_ON,        0, .pwm = { 0x00, 0x80 } }, /* 0, Screen: on,  HSync: on,  VSync: on */
+	{ GRAPH_OFF,       0, .pwm = { 0x20, 0x00 } }, /* 1, Screen: off, HSync: off, VSync: off */
+	{ GRAPH_STANDBY,   0, .pwm = { 0x20, 0x80 } }, /* 2, Screen: off, HSync: off, VSync: on */
+	{ GRAPH_SUSPEND,   0, .pwm = { 0x20, 0x80 } }, /* 4, Screen: off, HSync: on,  VSync: off */
+	/* 8-bit color palette */
+	{ GRAPH_320x200x8, 1, .gfx = { GRAPH_70Hz, .cfg = { 25175, 320, 336, 384, 400, 0, 200, 206, 207, 224, 2, VGA_VSYNCP | VGA_CLKDIV } } }, /* 5 */
 	/* No mode */
-	{ GRAPH_NOMODE }
+	{ 0 }
 };
 
 
@@ -135,37 +119,37 @@ extern int graph_schedule(graph_t *graph);
 
 int vgadev_cursorpos(graph_t *graph, unsigned int x, unsigned int y)
 {
-	return EOK;
+	return -ENOTSUP;
 }
 
 
 int vgadev_cursorset(graph_t *graph, const unsigned char *and, const unsigned char *xor, unsigned int bg, unsigned int fg)
 {
-	return EOK;
+	return -ENOTSUP;
 }
 
 
 int vgadev_cursorhide(graph_t *graph)
 {
-	return EOK;
+	return -ENOTSUP;
 }
 
 
 int vgadev_cursorshow(graph_t *graph)
 {
-	return EOK;
+	return -ENOTSUP;
 }
 
 
 int vgadev_colorset(graph_t *graph, const unsigned char *colors, unsigned int first, unsigned int last)
 {
-	return -ENOTSUP;
+	return EOK;
 }
 
 
 int vgadev_colorget(graph_t *graph, unsigned char *colors, unsigned int first, unsigned int last)
 {
-	return -ENOTSUP;
+	return EOK;
 }
 
 
@@ -183,6 +167,9 @@ int vgadev_commit(graph_t *graph)
 
 int vgadev_trigger(graph_t *graph)
 {
+	if (vgadev_isbusy(graph))
+		return -EBUSY;
+
 	return graph_schedule(graph);
 }
 
@@ -195,154 +182,45 @@ int vgadev_vsync(graph_t *graph)
 
 int vgadev_mode(graph_t *graph, graph_mode_t mode, graph_freq_t freq)
 {
-	unsigned int i, tmp, hblanks, hblanke, vres, vsyncs, vsynce, vtotal, vblanks, vblanke;
-	vga_state_t state = { .cmap = NULL, .font1 = NULL, .font2 = NULL, .text = NULL };
+	unsigned int i = DEFMODE;
 	vgadev_t *vgadev = (vgadev_t *)graph->adapter;
 	vga_t *vga = &vgadev->vga;
+	vga_state_t state;
+	vga_mode_t cfg;
 
-	for (i = 0; (modes[i].mode != mode) || (modes[i].depth && (modes[i].gfx.freq != freq)); i++)
-		if (modes[i].mode == GRAPH_NOMODE)
-			return -ENOTSUP;
+	if (mode != GRAPH_DEFMODE) {
+		for (i = 0; (modes[i].mode != mode) || (modes[i].depth && (freq != GRAPH_DEFFREQ) && (modes[i].gfx.freq != freq)); i++)
+			if (!modes[i].mode)
+				return -ENOTSUP;
+	}
 
-	/* Power management mode */
+	/* Power management mode (DPMS) */
 	if (!modes[i].depth) {
 		vga_writeseq(vga, 0x00, 0x01);
-		vga_writeseq(vga, 0x01, (vga_readseq(vga, 0x01) & ~0x20) | modes[i].pwm.seq01);
-		vga_writecrtc(vga, 0x17, (vga_readcrtc(vga, 0x17) & ~0x80) | modes[i].pwm.crtc17);
+		vga_writeseq(vga, 0x01, (vga_readseq(vga, 0x01) & ~0x20) | modes[i].pwm.sr01);
+		vga_writecrtc(vga, 0x17, (vga_readcrtc(vga, 0x17) & ~0x80) | modes[i].pwm.cr17);
 		vga_writeseq(vga, 0x00, 0x03);
 		return EOK;
 	}
+	cfg = modes[i].gfx.cfg;
 
-	/* Set HSYNC & VSYNC polarity */
-	state.misc = 0x23;
-	if (!(modes[i].gfx.flags & HSYNCP))
-		state.misc |= 0x40;
-	if (!(modes[i].gfx.flags & VSYNCP))
-		state.misc |= 0x80;
+	/* Initialize VGA state */
+	vga_mode(0, &cfg, &state);
+	state.cmap = NULL;
+	state.text = NULL;
+	state.font1 = NULL;
+	state.font2 = NULL;
 
-	/* Sequencer */
-	state.seq[0] = 0x00;
-	state.seq[1] = 0x01;//(modes[i].gfx.flags & CLKDIV) ? 0x09 : 0x01;
-	state.seq[2] = 0x0f;
-	state.seq[3] = 0x00;
-	state.seq[4] = 0x0e;
-
-	/* CRT controller */
-	vres = modes[i].gfx.vres;
-	vsyncs = modes[i].gfx.vsyncs;
-	vsynce = modes[i].gfx.vsynce;
-	vtotal = modes[i].gfx.vtotal;
-
-	if (modes[i].gfx.flags & INTERLACE) {
-		vres >>= 1;
-		vsyncs >>= 1;
-		vsynce >>= 1;
-		vtotal >>= 1;
-	}
-
-	if (modes[i].gfx.flags & DBLSCAN) {
-		vres <<= 1;
-		vsyncs <<= 1;
-		vsynce <<= 1;
-		vtotal <<= 1;
-	}
-
-	if (modes[i].gfx.vscan > 1) {
-		vres *= modes[i].gfx.vscan;
-		vsyncs *= modes[i].gfx.vscan;
-		vsynce *= modes[i].gfx.vscan;
-		vtotal *= modes[i].gfx.vscan;
-	}
-
-	vblanks = min(vsyncs, vres);
-	vblanke = max(vsynce, vtotal);
-	if (vblanks + 127 < vblanke)
-		vblanks = vblanke - 127;
-
-	hblanks = min(modes[i].gfx.hsyncs, modes[i].gfx.hres);
-	hblanke = max(modes[i].gfx.hsynce, modes[i].gfx.htotal);
-	if (hblanks + 63 * 8 < hblanke)
-		hblanks = hblanke - 63 * 8;
-
-	state.crtc[0] = 0x5f;//(modes[i].gfx.htotal >> 3) - 5;
-	state.crtc[1] = 0x4f;//(modes[i].gfx.hres >> 3) - 1;
-	state.crtc[2] = 0x50;//(hblanks >> 3) - 1;
-	state.crtc[3] = 0x82;//(((hblanke >> 3) - 1) & 0x1f) | 0x80;
-	if ((tmp = ((modes[i].gfx.hskew << 2) + 0x10) & ~0x1f) < 0x80)
-		state.crtc[3] |= tmp;
-	state.crtc[4] = 0x54;//(modes[i].gfx.hsyncs >> 3) - 1;
-	state.crtc[5] = 0x80;//((((hblanke >> 3) - 1) & 0x20) << 2) | (((modes[i].gfx.hsynce >> 3) - 1) & 0x1f);
-	state.crtc[6] = 0xBF;//(vtotal - 2) & 0xff;
-	state.crtc[7] = 0x1F;//(((vtotal - 2) & 0x100) >> 8) | (((vres - 1) & 0x100) >> 7) | (((vsyncs - 1) & 0x100) >> 6) | (((vblanks - 1) & 0x100) >> 5);
-	//state.crtc[7] |= (((vtotal - 2) & 0x200) >> 4) | (((vres - 1) & 0x200) >> 3) | (((vsyncs - 1) & 0x200) >> 2) | 0x10;
-	state.crtc[8] = 0x00;
-	state.crtc[9] = 0x41;//(((vblanks - 1) & 0x200) >> 4) | 0x40;
-	if (modes[i].gfx.flags & DBLSCAN)
-		state.crtc[9] |= 0x80;
-	if (modes[i].gfx.vscan >= 32)
-		state.crtc[9] |= 0x1f;
-	else if (modes[i].gfx.vscan > 1)
-		state.crtc[9] |= modes[i].gfx.vscan - 1;
-	state.crtc[10] = 0x00;
-	state.crtc[11] = 0x00;
-	state.crtc[12] = 0x00;
-	state.crtc[13] = 0x00;
-	state.crtc[14] = 0x00;
-	state.crtc[15] = 0x00;
-	state.crtc[16] = 0x9C;//(vsyncs - 1) & 0xff;
-	state.crtc[17] = 0x8E;//((vsynce - 1) & 0xff) | 0x20;
-	state.crtc[18] = 0x8F;//(vres - 1) & 0xff;
-	state.crtc[19] = 0x28;//((modes[i].gfx.hres + 0x0f) & ~0x0f) >> 3;
-	state.crtc[20] = 0x40;//0x00;
-	state.crtc[21] = 0x96;//(vblanks - 1) & 0xff;
-	state.crtc[22] = 0xB9;//(vblanke - 1) & 0xff;
-	state.crtc[23] = 0xA3;//0xc3;
-	state.crtc[24] = 0xff;
-
-	/* Graphics controller */
-	state.gfx[0] = 0x00;
-	state.gfx[1] = 0x00;
-	state.gfx[2] = 0x00;
-	state.gfx[3] = 0x00;
-	state.gfx[4] = 0x00;
-	state.gfx[5] = 0x40;
-	state.gfx[6] = 0x05;
-	state.gfx[7] = 0x0f;
-	state.gfx[8] = 0xff;
-
-	/* Attributes controller */
-	state.attr[0] = 0x00;
-	state.attr[1] = 0x01;
-	state.attr[2] = 0x02;
-	state.attr[3] = 0x03;
-	state.attr[4] = 0x04;
-	state.attr[5] = 0x05;
-	state.attr[6] = 0x06;
-	state.attr[7] = 0x07;
-	state.attr[8] = 0x08;
-	state.attr[9] = 0x09;
-	state.attr[10] = 0x0a;
-	state.attr[11] = 0x0b;
-	state.attr[12] = 0x0c;
-	state.attr[13] = 0x0d;
-	state.attr[14] = 0x0e;
-	state.attr[15] = 0x0f;
-	state.attr[16] = 0x41;
-	state.attr[17] = 0x00;//0xff;
-	state.attr[18] = 0x0f;
-	state.attr[19] = 0x00;
-	state.attr[20] = 0x00;
-
-	/* Program VGA registers */
+	/* Program mode */
 	vga_mlock(vga);
-	vga_restore(vga, &state);
+	vga_restoremode(vga, &state);
 	vga_munlock(vga);
 
-	/* Clear screen and update graph data */
-	memset(vga->mem, 0, VGA_MEMSZ);
+	/* Update graph data and clear screen */
 	graph->depth = modes[i].depth;
-	graph->width = modes[i].gfx.hres;
-	graph->height = modes[i].gfx.vres;
+	graph->width = modes[i].gfx.cfg.hres;
+	graph->height = modes[i].gfx.cfg.vres;
+	memset(vga->mem, 0, graph->width * graph->height * graph->depth);
 
 	return EOK;
 }
@@ -351,13 +229,14 @@ int vgadev_mode(graph_t *graph, graph_mode_t mode, graph_freq_t freq)
 void vgadev_close(graph_t *graph)
 {
 	vgadev_t *vgadev = (vgadev_t *)graph->adapter;
+	vga_t *vga = &vgadev->vga;
 
-	/* Restore original VGA state */
-	vga_mlock(&vgadev->vga);
-	vga_restore(&vgadev->vga, &vgadev->state);
-	vga_munlock(&vgadev->vga);
+	/* Restore original video state */
+	vga_mlock(vga);
+	vga_restore(vga, &vgadev->state);
+	vga_munlock(vga);
 
-	/* Lock VGA registers and destroy device handle */
+	/* Lock VGA registers and destroy device */
 	vga_lock(&vgadev->vga);
 	vga_done(&vgadev->vga);
 	free(vgadev);
@@ -367,27 +246,36 @@ void vgadev_close(graph_t *graph)
 int vgadev_open(graph_t *graph)
 {
 	vgadev_t *vgadev;
+	vga_t *vga;
 	int err;
 
 	if ((vgadev = malloc(sizeof(vgadev_t))) == NULL)
 		return -ENOMEM;
+	vga = &vgadev->vga;
 
 	if ((err = vga_init(&vgadev->vga)) < 0) {
 		free(vgadev);
 		return err;
 	}
 
-	/* Unlock VGA registers and save current state */
+	/* Check color support */
+	if (!(vga_readmisc(vga) & 0x01)) {
+		vga_done(&vgadev->vga);
+		free(vgadev);
+		return -ENOTSUP;
+	}
+
+	/* Unlock VGA registers and save current video state */
+	vga_unlock(&vgadev->vga);
 	vgadev->state.cmap = vgadev->cmap;
 	vgadev->state.font1 = vgadev->font1;
 	vgadev->state.font2 = vgadev->font2;
 	vgadev->state.text = vgadev->text;
-	vga_unlock(&vgadev->vga);
-	vga_save(&vgadev->vga, &vgadev->state);
+	vga_save(vga, &vgadev->state);
 
 	/* Initialize graph info */
 	graph->adapter = vgadev;
-	graph->data = vgadev->vga.mem;
+	graph->data = vga->mem;
 	graph->width = 0;
 	graph->height = 0;
 	graph->depth = 0;
